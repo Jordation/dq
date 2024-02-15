@@ -19,7 +19,7 @@ type Server struct {
 }
 
 func NewServer() (*Server, error) {
-	Store, _ := store.NewPartionedStore("./store/partition/store")
+	Store, _ := store.NewPartionedStore("./store/partition/store", 1024)
 	return &Server{
 		Stores: map[string]store.Store{"default": Store},
 	}, nil
@@ -62,11 +62,6 @@ func (s *Server) handleConnection(conn net.Conn) error {
 		case "read":
 			queueName, offset := parseReadMessage(content)
 			store := s.Stores[queueName]
-
-			/* 			if store.Messages() < offset {
-				logrus.Info("offset greater than message count")
-				return nil
-			} */
 
 			buf := make([]byte, 1024)
 

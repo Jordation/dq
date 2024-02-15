@@ -14,14 +14,8 @@ type Consumer struct {
 	srv           net.Conn
 	msgChan       chan []byte
 	consumingFrom string
+	currOffset    int64
 }
-
-type ConsumeMode int8
-
-const (
-	FromLatest ConsumeMode = iota
-	FromOffset
-)
 
 func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
 	conn, err := net.Dial("tcp", ":"+addr)
@@ -36,14 +30,6 @@ func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
 		msgChan:       msgChan,
 		consumingFrom: consumesFrom,
 	}, nil
-}
-
-func (pr *Consumer) Start(consumeMode ConsumeMode, offset ...int64) {
-	switch consumeMode {
-	case FromLatest:
-	case FromOffset:
-
-	}
 }
 
 // the out channel gets the buffers from the server
@@ -70,13 +56,13 @@ func (c *Consumer) Consume() chan []byte {
 }
 
 func parseSrvMessage(msg []byte) ([]byte, int64) {
-	segs := bytes.Split(msg, []byte{':'})
-	nextOffset, err := strconv.ParseInt(string(segs[0]), 0, 64)
+	offsetAsBytes, msg, _ := bytes.Cut(msg, []byte{':'})
+	nextOffset, err := strconv.ParseInt(string(offsetAsBytes), 0, 64)
 	if err != nil {
 		logrus.WithError(err).Error("error parsing server offset response")
 	}
 
-	return bytes.Join(segs[1:], []byte{}), nextOffset
+	return msg, nextOffset
 }
 
 func requestRead(srv net.Conn, queueName string, off int64) error {

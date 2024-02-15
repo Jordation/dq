@@ -10,14 +10,14 @@ func TestStore(t *testing.T) {
 	path := "./partition/store"
 	ps, _ := NewPartionedStore(path)
 	defer cleanup(ps.(*partitionedStore).f, false)
+	stat, _ := ps.(*partitionedStore).f.Stat()
+	fmt.Println(stat.Size() / ps.(*partitionedStore).entrySize)
 
-	writeShit(ps.(*partitionedStore))
+	//	writeShit(ps.(*partitionedStore))
 
-	mySlice := make([]byte, 512)
-
-	ps.ReadAt(mySlice, 15)
-
-	fmt.Println(string(mySlice))
+	/* 	mySlice := make([]byte, 512)
+	   	ps.ReadAt(mySlice, 15)
+	   	fmt.Println(string(mySlice)) */
 
 }
 
