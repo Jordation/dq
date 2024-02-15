@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/Jordation/dqmon/util"
 	"github.com/sirupsen/logrus"
@@ -12,22 +13,34 @@ import (
 
 type Consumer struct {
 	srv           net.Conn
-	msgChan       chan []byte
 	consumingFrom string
-	currOffset    int64
 }
 
 func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
-	conn, err := net.Dial("tcp", ":"+addr)
-	if err != nil {
-		return nil, err
+	var (
+		srv     net.Conn
+		retries = 3
+	)
+
+	for i := range retries {
+		conn, err := net.Dial("tcp", ":"+addr)
+		if err != nil && retries == 0 {
+			return nil, err
+		}
+
+		if err == nil {
+			srv = conn
+			break
+		}
+
+		time.Sleep(time.Millisecond * 50 * time.Duration(i))
+		logrus.Info("retrying")
+		retries--
+
 	}
 
-	msgChan := util.PollConnection(conn)
-
 	return &Consumer{
-		srv:           conn,
-		msgChan:       msgChan,
+		srv:           srv,
 		consumingFrom: consumesFrom,
 	}, nil
 }
@@ -35,11 +48,13 @@ func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
 // the out channel gets the buffers from the server
 func (c *Consumer) Consume() chan []byte {
 	outChan := make(chan []byte)
+	msgChan := util.PollConnection(c.srv)
+
 	requestRead(c.srv, "default", 0)
 
 	go func(outChan chan<- []byte) {
 		for {
-			in := <-c.msgChan
+			in := <-msgChan
 			msg, nextOffset := parseSrvMessage(in)
 
 			fmt.Println("msg: ", string(msg))

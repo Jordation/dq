@@ -8,7 +8,7 @@ import (
 
 func TestStore(t *testing.T) {
 	path := "./partition/store"
-	ps, _ := NewPartionedStore(path)
+	ps, _ := NewPartionedStore(path, 1024)
 	defer cleanup(ps.(*partitionedStore).f, false)
 	stat, _ := ps.(*partitionedStore).f.Stat()
 	fmt.Println(stat.Size() / ps.(*partitionedStore).entrySize)

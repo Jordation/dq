@@ -1,10 +1,11 @@
 module github.com/Jordation/dqmon
 
-go 1.21.5
+go 1.22.0
 
 require (
 	github.com/davecgh/go-spew v1.1.1
 	github.com/sirupsen/logrus v1.9.3
+	syreclabs.com/go/faker v1.2.3
 )
 
 require golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect

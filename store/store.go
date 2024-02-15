@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"sync/atomic"
@@ -64,29 +65,15 @@ func (ps *partitionedStore) Write(p []byte) (int, error) {
 }
 
 func (ps *partitionedStore) ReadAt(p []byte, off int64) (int, error) {
-	n := 0
-	_, err := ps.f.ReadAt(p, off*ps.entrySize)
+	n, err := ps.f.ReadAt(p, off*ps.entrySize)
 	if err != nil {
 		return n, err
 	}
 
-	for _, b := range p {
-		if b == 0 {
-			break
-		}
-		n++
-	}
+	n = bytes.Index(p, []byte{0})
 
 	return n, nil
 }
 
 func (ps *partitionedStore) Cleanup() error  { return nil }
 func (ps *partitionedStore) Messages() int64 { return ps.maxOffset.Load() }
-
-/* 			[]byte(fmt.Sprintf(
-	`{"name": "%v", "birthday": "%v", "address": "%v"}%v`,
-	faker.Name(),
-	faker.Date().Birthday(18, 80),
-	faker.Address(),
-	"\n",
-))) */

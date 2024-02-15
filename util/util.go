@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"net"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 func PollConnection(conn net.Conn) chan []byte {
 	connChan := make(chan []byte)
 	r := bufio.NewReader(conn)
 
-	go func(c net.Conn) {
+	go func() {
 		for {
 			buff, err := r.ReadBytes('\n')
 			if err != nil {
@@ -21,13 +19,12 @@ func PollConnection(conn net.Conn) chan []byte {
 			}
 
 			if len(buff) > 0 {
-				logrus.Info("read", len(buff), "bytes")
 				connChan <- buff
 			} else {
 				time.Sleep(time.Millisecond * 250)
 			}
 		}
-	}(conn)
+	}()
 
 	return connChan
 }
