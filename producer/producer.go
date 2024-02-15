@@ -1,6 +1,7 @@
 package producer
 
 import (
+	"fmt"
 	"net"
 )
 
@@ -20,5 +21,5 @@ func NewProducer(addr string) (*Producer, error) {
 }
 
 func (pr *Producer) Write(p []byte) (int, error) {
-	return pr.srv.Write(p)
+	return fmt.Fprintf(pr.srv, "write:%s", p)
 }

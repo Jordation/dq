@@ -11,8 +11,9 @@ import (
 )
 
 type Consumer struct {
-	srv     net.Conn
-	msgChan chan []byte
+	srv           net.Conn
+	msgChan       chan []byte
+	consumingFrom string
 }
 
 type ConsumeMode int8
@@ -22,7 +23,7 @@ const (
 	FromOffset
 )
 
-func NewConsumer(addr string) (*Consumer, error) {
+func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
 	conn, err := net.Dial("tcp", ":"+addr)
 	if err != nil {
 		return nil, err
@@ -31,8 +32,9 @@ func NewConsumer(addr string) (*Consumer, error) {
 	msgChan := util.PollConnection(conn)
 
 	return &Consumer{
-		srv:     conn,
-		msgChan: msgChan,
+		srv:           conn,
+		msgChan:       msgChan,
+		consumingFrom: consumesFrom,
 	}, nil
 }
 
@@ -44,9 +46,10 @@ func (pr *Consumer) Start(consumeMode ConsumeMode, offset ...int64) {
 	}
 }
 
+// the out channel gets the buffers from the server
 func (c *Consumer) Consume() chan []byte {
-	resp := make(chan []byte)
-	requestRead(c.srv, 0)
+	outChan := make(chan []byte)
+	requestRead(c.srv, "default", 0)
 
 	go func(outChan chan<- []byte) {
 		for {
@@ -56,15 +59,14 @@ func (c *Consumer) Consume() chan []byte {
 			fmt.Println("msg: ", string(msg))
 			//outChan <- msg
 
-			if err := requestRead(c.srv, nextOffset); err != nil {
+			if err := requestRead(c.srv, c.consumingFrom, nextOffset); err != nil {
 				logrus.WithError(err).Errorf("error requesting next read at offset %d", nextOffset)
 				return
 			}
 		}
+	}(outChan)
 
-	}(resp)
-
-	return resp
+	return outChan
 }
 
 func parseSrvMessage(msg []byte) ([]byte, int64) {
@@ -77,7 +79,7 @@ func parseSrvMessage(msg []byte) ([]byte, int64) {
 	return bytes.Join(segs[1:], []byte{}), nextOffset
 }
 
-func requestRead(srv net.Conn, off int64) error {
-	_, err := fmt.Fprintf(srv, "read:default:%d\n", off)
+func requestRead(srv net.Conn, queueName string, off int64) error {
+	_, err := fmt.Fprintf(srv, "read:%s:%d\n", queueName, off)
 	return err
 }

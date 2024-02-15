@@ -31,7 +31,3 @@ func PollConnection(conn net.Conn) chan []byte {
 
 	return connChan
 }
-
-func WriteMessage(conn net.Conn, msgType, msgContent string) (int, error) {
-	return fmt.Fprintf(conn, "%s:%s", msgType, msgContent)
-}

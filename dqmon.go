@@ -12,10 +12,11 @@ func main() {
 	go s.Start()
 
 	time.Sleep(time.Millisecond * 50)
-	c, err := consumer.NewConsumer("3030")
+	c, err := consumer.NewConsumer("3030", "default")
 	if err != nil {
 		panic(err)
 	}
+
 	c.Consume()
 	select {}
 }
