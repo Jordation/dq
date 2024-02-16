@@ -10,7 +10,7 @@ type StatusRequest struct {
 	Queue string
 }
 
-type Connection struct {
+type QueueClient struct {
 	Conn         net.Conn
 	ConsumesFrom string
 }

@@ -2,34 +2,46 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"strconv"
-	"strings"
 
 	"github.com/Jordation/dqmon/store"
 	"github.com/Jordation/dqmon/types"
 	"github.com/Jordation/dqmon/util"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
 )
 
 type Server struct {
-	Stores    map[string]store.Store
-	Consumers []*types.Connection
+	port string
+
+	stores  map[string]store.Store
+	clients []*types.QueueClient
 }
 
-func NewServer() (*Server, error) {
-	Store, _ := store.NewPartionedStore("./store/partition/store", 1024)
+func NewServer(port, defaultStorePath string) (*Server, error) {
+	Store, err := store.NewPartionedStore(defaultStorePath, 1024)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
-		Stores: map[string]store.Store{"default": Store},
+		stores: map[string]store.Store{"default": Store},
+		port:   port,
 	}, nil
 }
 
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", ":3030")
+	ln, err := net.Listen("tcp", ":"+s.port)
 	if err != nil {
 		return err
 	}
+
+	skip := false
 
 	for {
 		conn, err := ln.Accept()
@@ -39,47 +51,75 @@ func (s *Server) Start() error {
 
 		logrus.Info("accepted listener")
 
-		s.Consumers = append(s.Consumers, &types.Connection{
-			Conn:         conn,
-			ConsumesFrom: "default",
-		})
-
 		go func(c net.Conn) {
+			if !skip {
+				s.clients = append(s.clients, &types.QueueClient{
+					Conn:         c,
+					ConsumesFrom: "default",
+				})
+				skip = true
+			}
+
 			if err := s.handleConnection(c); err != nil {
-				logrus.Error("it's fucked", err)
+				logrus.WithError(err).Error("it's fucked closed conn")
 			}
 		}(conn)
 	}
 }
 
+// errors will terminate the connection
 func (s *Server) handleConnection(conn net.Conn) error {
 	connChan := util.PollConnection(conn)
+	defer func() {
+		if err := conn.Close(); err != nil {
+			logrus.WithError(err).Error("problem closing connection on handler exit")
+		}
+	}()
 
 	for msg := range connChan {
-		typeOfMessage, content := parseMessage(msg)
-		switch typeOfMessage {
+		typeOfMessage, queueName, content, err := parseMessage(msg)
+		if err != nil {
+			return err
+		}
 
+		store, ok := s.stores[queueName]
+		if !ok {
+			return errors.New("store not found for queue : " + queueName)
+		}
+
+		switch typeOfMessage {
 		case "read":
-			queueName, offset := parseReadMessage(content)
-			store := s.Stores[queueName]
+			offset, err := parseReadMessage(content)
+			if err != nil {
+				return err
+			}
 
 			buf := make([]byte, 1024)
 
 			n, err := store.ReadAt(buf, offset)
-			if err != nil {
+			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
 
-			_, err = fmt.Fprintf(conn, "%d:%v\n", offset+1, string(buf[:n]))
-			if err != nil {
-				return err
+			if !errors.Is(err, io.EOF) {
+				_, err = fmt.Fprintf(conn, "%d:%s\n", offset+1, buf[:n])
+				if err != nil {
+					return err
+				}
 			}
 
 		case "write":
-			queueName, msg := parseWriteMessage(content)
-			_, _ = s.Stores[queueName].Write(msg)
+			// TODO: maybe swap the order around and change consumers to try consume n times for an offset before failing?
+			//i.e. they all start asking for the new message and get it when the write completes
 
-			s.NotifyConsumers(queueName, msg)
+			if _, err := store.Write(content); err != nil {
+				logrus.Error()
+				return err
+			}
+
+			spew.Dump(s.clients)
+
+			s.NotifyConsumers(queueName, content)
 
 		default:
 			logrus.Info("unhandled message type", typeOfMessage)
@@ -91,50 +131,54 @@ func (s *Server) handleConnection(conn net.Conn) error {
 }
 
 // returns message type and message content
-func parseMessage(msg []byte) (string, [][]byte) {
-	chunks := bytes.Split(msg, []byte{':'})
-	if len(chunks) < 2 {
-		logrus.Error("failed to parse message", msg)
-		return "", nil
+func parseMessage(msg []byte) (string, string, []byte, error) {
+	msgType, nameAndContent, found := bytes.Cut(msg, []byte{':'})
+	if !found {
+		return "", "", nil, errors.New("no separator ':' found in message " + string(msg))
 	}
 
-	if bytes.Equal(chunks[0], types.MessageTypeRead) {
-		return "read", chunks[1:]
-	}
-
-	if bytes.Equal(chunks[0], types.MessageTypeWrite) {
-		return "write", chunks[1:]
-	}
-
-	return "", nil
-}
-
-// returns queue name and offset to read at
-func parseReadMessage(msg [][]byte) (string, int64) {
-	offset, err := strconv.ParseInt(strings.TrimRight(string(msg[1]), "\n"), 0, 64)
+	queueName, content, err := splitQueueName(nameAndContent)
 	if err != nil {
-		logrus.Error("failed to parse offset for read message")
-		return "", 0
+		return "", "", nil, err
 	}
 
-	return string(msg[0]), offset
+	if bytes.Equal(msgType, types.MessageTypeRead) {
+		return "read", queueName, content, nil
+	} else if bytes.Equal(msgType, types.MessageTypeWrite) {
+		return "write", queueName, content, nil
+	}
+
+	return string(msgType), queueName, nil, nil
 }
 
-func parseWriteMessage(msg [][]byte) (string, []byte) {
-	if len(msg) < 2 {
-		logrus.Fatal("malformed write message: ", msg)
+// returns offset to read at
+func parseReadMessage(msg []byte) (int64, error) {
+	offset, err := strconv.ParseInt(string(msg), 0, 64)
+	if err != nil {
+		return 0, err
 	}
-	return string(msg[0]), msg[1]
+
+	return offset, nil
+}
+
+func splitQueueName(nameAndContent []byte) (string, []byte, error) {
+	queueNameBytes, otherBytes, found := bytes.Cut(nameAndContent, []byte{':'})
+	if !found {
+		return "", nil, errors.New("no separator ':' found in name and content" + string(nameAndContent))
+	}
+
+	return string(queueNameBytes), otherBytes, nil
 }
 
 func (s *Server) NotifyConsumers(queueName string, msg []byte) {
 	// notify the consumers of queue that ther are new messages available
-	for _, c := range s.Consumers {
+	for _, c := range s.clients {
+		fmt.Fprintf(os.Stdout, "checking %v\n", c.ConsumesFrom)
 		if c.ConsumesFrom == queueName {
-			_, err := c.Conn.Write(msg)
+			fmt.Fprintf(os.Stdout, "matched %v, writing %s\n", c.ConsumesFrom, msg)
+			_, err := fmt.Fprintf(c.Conn, "%s\n", msg)
 			if err != nil {
 				logrus.WithError(err).Errorf("can't notify consumer of %v", queueName)
-				continue
 			}
 		}
 	}

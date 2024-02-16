@@ -12,45 +12,46 @@ import (
 )
 
 type Consumer struct {
-	srv           net.Conn
-	consumingFrom string
+	srv       net.Conn
+	queueName string
 }
 
-func NewConsumer(addr string, consumesFrom string) (*Consumer, error) {
+func NewConsumer(port string, queueName string) (*Consumer, error) {
 	var (
 		srv     net.Conn
 		retries = 3
 	)
 
 	for i := range retries {
-		conn, err := net.Dial("tcp", ":"+addr)
+		conn, err := net.Dial("tcp", ":"+port)
 		if err != nil && retries == 0 {
 			return nil, err
 		}
 
 		if err == nil {
+			logrus.Info("connected to server on :", port)
 			srv = conn
 			break
 		}
 
-		time.Sleep(time.Millisecond * 50 * time.Duration(i))
+		time.Sleep(time.Millisecond * 200 * time.Duration(i))
 		logrus.Info("retrying")
 		retries--
-
 	}
 
 	return &Consumer{
-		srv:           srv,
-		consumingFrom: consumesFrom,
+		srv:       srv,
+		queueName: queueName,
 	}, nil
 }
 
-// the out channel gets the buffers from the server
+// consume will close the out channel if there is an error
+// the caller should read from the queue safely in order to not read a closed channel
 func (c *Consumer) Consume() chan []byte {
 	outChan := make(chan []byte)
 	msgChan := util.PollConnection(c.srv)
 
-	requestRead(c.srv, "default", 0)
+	requestRead(c.srv, c.queueName, 0)
 
 	go func(outChan chan<- []byte) {
 		for {
@@ -60,7 +61,7 @@ func (c *Consumer) Consume() chan []byte {
 			fmt.Println("msg: ", string(msg))
 			//outChan <- msg
 
-			if err := requestRead(c.srv, c.consumingFrom, nextOffset); err != nil {
+			if err := requestRead(c.srv, c.queueName, nextOffset); err != nil {
 				logrus.WithError(err).Errorf("error requesting next read at offset %d", nextOffset)
 				return
 			}
@@ -71,7 +72,11 @@ func (c *Consumer) Consume() chan []byte {
 }
 
 func parseSrvMessage(msg []byte) ([]byte, int64) {
-	offsetAsBytes, msg, _ := bytes.Cut(msg, []byte{':'})
+	offsetAsBytes, msg, found := bytes.Cut(msg, []byte{':'})
+	if !found {
+		return nil, 0
+	}
+
 	nextOffset, err := strconv.ParseInt(string(offsetAsBytes), 0, 64)
 	if err != nil {
 		logrus.WithError(err).Error("error parsing server offset response")

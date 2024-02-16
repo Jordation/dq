@@ -1,19 +1,34 @@
 package producer
 
 import (
-	"bytes"
 	"fmt"
+	"net"
 	"testing"
-
-	"github.com/davecgh/go-spew/spew"
+	"time"
 )
 
 func TestProducer(t *testing.T) {
-	bslice := []byte("hello")
+	bslice := []byte{'h', 'e', 'l', 'l', 'o'}
 
-	buff := bytes.NewBuffer([]byte{})
-	fmt.Fprintf(buff, "write:%s", bslice)
+	srv, err := net.Listen("tcp", ":3030")
+	if err != nil {
+		panic(err)
+	}
 
-	spew.Dump(buff.Bytes())
-	fmt.Println(buff.Bytes())
+	go func() {
+		time.Sleep(time.Second)
+		conn, err := net.Dial("tcp", ":3030")
+		if err != nil {
+			panic(err)
+		}
+
+		out := make([]byte, 100)
+		conn.Read(out)
+		fmt.Println(string(out))
+	}()
+
+	for {
+		c, _ := srv.Accept()
+		fmt.Fprintf(c, "write:%s\n", bslice)
+	}
 }

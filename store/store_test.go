@@ -1,9 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"testing"
+
+	"github.com/sirupsen/logrus"
+	"syreclabs.com/go/faker"
 )
 
 func TestStore(t *testing.T) {
@@ -18,6 +22,51 @@ func TestStore(t *testing.T) {
 	/* 	mySlice := make([]byte, 512)
 	   	ps.ReadAt(mySlice, 15)
 	   	fmt.Println(string(mySlice)) */
+
+}
+
+func BenchmarkBufferStuff(b *testing.B) {
+	size := 1024 * 128
+	nTests := 100_00
+
+	type test struct {
+		name string
+		fn   func(b *testing.B)
+	}
+
+	writeData := faker.Lorem().Sentence(1000)
+
+	tests := []test{
+		{
+			name: "buffer used",
+			fn: func(b *testing.B) {
+				buf := make([]byte, size)
+				buffed := bytes.NewBuffer(buf)
+				for range nTests {
+					buffed.Write([]byte(writeData))
+					_, _ = buffed.Read(nil)
+					buffed.Reset()
+				}
+			},
+		},
+		{
+			name: "new slice each time",
+			fn: func(b *testing.B) {
+				for range nTests {
+					buf := make([]byte, size)
+					copy(buf, []byte(writeData))
+					lenData := len(writeData)
+					_ = buf[:lenData]
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		if !b.Run(test.name, test.fn) {
+			logrus.Error("wtf")
+		}
+	}
 
 }
 
