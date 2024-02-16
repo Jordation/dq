@@ -12,7 +12,6 @@ import (
 	"github.com/Jordation/dqmon/store"
 	"github.com/Jordation/dqmon/types"
 	"github.com/Jordation/dqmon/util"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
 )
 
@@ -41,8 +40,6 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	skip := false
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -52,13 +49,10 @@ func (s *Server) Start() error {
 		logrus.Info("accepted listener")
 
 		go func(c net.Conn) {
-			if !skip {
-				s.clients = append(s.clients, &types.QueueClient{
-					Conn:         c,
-					ConsumesFrom: "default",
-				})
-				skip = true
-			}
+			s.clients = append(s.clients, &types.QueueClient{
+				Conn:         c,
+				ConsumesFrom: "default",
+			})
 
 			if err := s.handleConnection(c); err != nil {
 				logrus.WithError(err).Error("it's fucked closed conn")
@@ -117,8 +111,6 @@ func (s *Server) handleConnection(conn net.Conn) error {
 				return err
 			}
 
-			spew.Dump(s.clients)
-
 			s.NotifyConsumers(queueName, content)
 
 		default:
@@ -175,8 +167,10 @@ func (s *Server) NotifyConsumers(queueName string, msg []byte) {
 	for _, c := range s.clients {
 		fmt.Fprintf(os.Stdout, "checking %v\n", c.ConsumesFrom)
 		if c.ConsumesFrom == queueName {
+
 			fmt.Fprintf(os.Stdout, "matched %v, writing %s\n", c.ConsumesFrom, msg)
-			_, err := fmt.Fprintf(c.Conn, "%s\n", msg)
+
+			_, err := fmt.Fprintf(c.Conn, "%v:%s\n", s.stores[queueName].Messages(), msg)
 			if err != nil {
 				logrus.WithError(err).Errorf("can't notify consumer of %v", queueName)
 			}
