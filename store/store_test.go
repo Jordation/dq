@@ -1,21 +1,24 @@
 package store
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"os"
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
 	"syreclabs.com/go/faker"
 )
 
 func TestStore(t *testing.T) {
 	path := "./partition/store"
-	ps, _ := NewPartionedStore(path, 1024)
-	defer cleanup(ps.(*partitionedStore).f, false)
-	stat, _ := ps.(*partitionedStore).f.Stat()
-	fmt.Println(stat.Size() / ps.(*partitionedStore).entrySize)
+	ps, _ := NewBasicStore(path)
+
+	defer cleanup(ps.(*basicStore).f, false)
+	stat, _ := ps.(*basicStore).f.Stat()
+	fmt.Println(stat.Size() / ps.(*basicStore).cfg.fixedEntrySize)
 
 	//	writeShit(ps.(*partitionedStore))
 
@@ -23,6 +26,48 @@ func TestStore(t *testing.T) {
 	   	ps.ReadAt(mySlice, 15)
 	   	fmt.Println(string(mySlice)) */
 
+}
+
+func TestBufioUsage(t *testing.T) {
+	fName := "./testdata/teststore"
+	f, err := os.OpenFile(fName, os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	r := bufio.NewScanner(f)
+
+	f.Close()
+	fmt.Printf("r.Scan(): %v\n", r.Scan())
+	fmt.Printf("r.Err(): %v\n", r.Err())
+
+	out := r.Bytes()
+	spew.Dump(out)
+
+}
+
+func TestPartitionManager(t *testing.T) {
+	pm := &partitionManager{
+		rootDir: "./testdata/",
+		cfg: &partitionedStoreConfig{
+			fixedEntrySize: 16,
+			maxFileSize:    16,
+			testOverride:   true,
+		},
+	}
+
+	scanner, err := pm.getScannerFor(0)
+	if err != nil {
+		panic(err)
+	}
+
+	for scanner.Scan() {
+		fmt.Println(scanner.Text())
+		if scanner.Err() != nil {
+			logrus.Error(scanner.Err())
+		}
+	}
+	logrus.Error(scanner.Err())
 }
 
 func BenchmarkBufferStuff(b *testing.B) {
@@ -77,7 +122,7 @@ func cleanup(file *os.File, clear bool) {
 	file.Close()
 }
 
-func writeShit(ps *partitionedStore) {
+func writeShit(ps *basicStore) {
 	for i := 0; i < 25; i++ {
 		ps.Write([]byte(fmt.Sprintf("ENTRY: %d", i)))
 	}

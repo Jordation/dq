@@ -16,13 +16,17 @@ type Store interface {
 	Messages() int64
 }
 
-type partitionedStore struct {
+type basicStore struct {
 	f         *os.File
 	maxOffset *atomic.Int64
-	entrySize int64
+	cfg       *partitionedStoreConfig
 }
 
-func NewPartionedStore(filePath string, entrySize int64) (Store, error) {
+func NewBasicStore(filePath string) (Store, error) {
+	cfg := &partitionedStoreConfig{
+		fixedEntrySize: 1024,
+	}
+
 	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
@@ -35,22 +39,22 @@ func NewPartionedStore(filePath string, entrySize int64) (Store, error) {
 
 	fella := &atomic.Int64{}
 	if stat.Size() > 0 {
-		fella.Add(stat.Size() / entrySize)
+		fella.Add(stat.Size() / cfg.fixedEntrySize)
 	}
 
-	return &partitionedStore{
+	return &basicStore{
 		f:         file,
-		entrySize: entrySize,
+		cfg:       cfg,
 		maxOffset: fella,
 	}, nil
 }
 
-func (ps *partitionedStore) Write(p []byte) (int, error) {
-	if int64(len(p)) > ps.entrySize {
+func (ps *basicStore) Write(p []byte) (int, error) {
+	if int64(len(p)) > ps.cfg.fixedEntrySize {
 		return 0, errors.New("line longer than max entry len")
 	}
 
-	padded := make([]byte, ps.entrySize)
+	padded := make([]byte, ps.cfg.fixedEntrySize)
 	copy(padded, p)
 
 	_, err := ps.f.Write(padded)
@@ -64,8 +68,8 @@ func (ps *partitionedStore) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (ps *partitionedStore) ReadAt(p []byte, off int64) (int, error) {
-	n, err := ps.f.ReadAt(p, off*ps.entrySize)
+func (ps *basicStore) ReadAt(p []byte, off int64) (int, error) {
+	n, err := ps.f.ReadAt(p, off*ps.cfg.fixedEntrySize)
 	if err != nil {
 		return n, err
 	}
@@ -75,5 +79,5 @@ func (ps *partitionedStore) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
-func (ps *partitionedStore) Cleanup() error  { return nil }
-func (ps *partitionedStore) Messages() int64 { return ps.maxOffset.Load() }
+func (ps *basicStore) Cleanup() error  { return nil }
+func (ps *basicStore) Messages() int64 { return ps.maxOffset.Load() }

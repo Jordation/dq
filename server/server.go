@@ -23,7 +23,7 @@ type Server struct {
 }
 
 func NewServer(port, defaultStorePath string) (*Server, error) {
-	Store, err := store.NewPartionedStore(defaultStorePath, 1024)
+	Store, err := store.NewBasicStore(defaultStorePath)
 	if err != nil {
 		return nil, err
 	}
