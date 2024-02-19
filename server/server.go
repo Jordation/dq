@@ -68,14 +68,14 @@ func (s *Server) handleConnection(conn net.Conn) error {
 	defer cancel()
 	connChan := util.PollConnection(conn)
 
-	store, queueName, err := s.handleConnectionHandshake(ctx, connChan)
+	store, queueName, err := s.handleConnectionHandshake(ctx, connChan, conn)
 	if err != nil {
 		return err
 	}
 
 	// handle the status messages
 	// also implement them on consoomer...
-	go s.handleConnectionStatusPings(ctx, conn, store)
+	//go s.handleConnectionStatusPings(ctx, conn, store)
 
 	for msg := range connChan {
 		typeOfMessage, _, content, err := parseMessage(msg)
@@ -118,7 +118,7 @@ func (s *Server) handleConnection(conn net.Conn) error {
 	return nil
 }
 
-func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte) (store.Store, string, error) {
+func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte, conn net.Conn) (store.Store, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
@@ -126,15 +126,13 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 	case <-ctx.Done():
 		return nil, "", fmt.Errorf("handshake failed: timeout")
 
-	case handshakeResponse := <-msgChan:
-		msgType, queueName, msgContent, err := parseMessage(handshakeResponse)
+	case handshakeRequest := <-msgChan:
+		msgType, queueName, otherContent, err := parseMessage(handshakeRequest)
 		if err != nil {
 			return nil, "", err
 		}
 
-		if len(msgContent) < 3 {
-			return nil, "", fmt.Errorf("handshake failed: message malformed (%s)", string(msgContent))
-		}
+		logrus.Info("CON MESSAGE: ", string(handshakeRequest))
 
 		store, ok := s.stores[queueName]
 		if !ok {
@@ -142,18 +140,22 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 		}
 
 		if msgType == "chs" {
-			_, offsetBytes, hasOffset := bytes.Cut(msgContent, types.MessageDelim)
-			if !hasOffset {
-				return store, queueName, nil
+			if len(otherContent) == 0 {
+				return nil, "", fmt.Errorf("handshake failed: no offset")
 			}
 
-			offset, err := strconv.ParseInt(string(offsetBytes), 0, 64)
+			offset, err := strconv.ParseInt(string(otherContent), 0, 64)
 			if err != nil {
 				return nil, "", errors.Wrap(err, "handshake failed: parsing offset")
 			}
 
 			if offset > store.Messages() {
 				return nil, "", fmt.Errorf("handshake failed: requested offset > messages")
+			}
+
+			_, err = fmt.Fprintf(conn, "%s:%d\n", types.MessageHandshakeOK, offset)
+			if err != nil {
+				return nil, "", errors.Wrap(err, "handshake failed")
 			}
 
 			return store, queueName, nil
@@ -201,7 +203,7 @@ func (s *Server) handleConnectionStatusPings(ctx context.Context, conn net.Conn,
 func parseMessage(msg []byte) (string, string, []byte, error) {
 	msgType, nameAndContent, found := bytes.Cut(msg, types.MessageDelim)
 	if !found {
-		return "", "", nil, fmt.Errorf("no separator ':' found in message " + string(msg))
+		return "", "", nil, fmt.Errorf("no separator ':' found in message %s", string(msg))
 	}
 
 	queueName, content, err := splitQueueName(nameAndContent)
@@ -212,13 +214,17 @@ func parseMessage(msg []byte) (string, string, []byte, error) {
 	switch true {
 	case bytes.Equal(msgType, types.MessageTypeRead):
 		return "read", queueName, content, nil
+
 	case bytes.Equal(msgType, types.MessageTypeWrite):
 		return "write", queueName, content, nil
-	case bytes.Equal(msgType, nil):
+
+	case bytes.Equal(msgType, types.MessageTypeStatus):
 		return "status", queueName, content, nil
-	case bytes.Equal(msgType, nil):
+
+	case bytes.Equal(msgType, types.MessageTypeConsumerHanshake):
 		return "chs", queueName, content, nil
-	case bytes.Equal(msgType, nil):
+
+	case bytes.Equal(msgType, types.MessageTypeProducerHanshake):
 		return "phs", queueName, content, nil
 	}
 
@@ -236,10 +242,10 @@ func parseReadMessageContent(msg []byte) (int64, error) {
 
 //queuename:type:content
 func splitQueueName(nameAndContent []byte) (string, []byte, error) {
-	queueNameBytes, otherBytes, found := bytes.Cut(nameAndContent, types.MessageDelim)
-	if !found {
-		return "", nil, fmt.Errorf("no separator ':' found in name and content" + string(nameAndContent))
-	}
+	queueNameBytes, otherBytes, _ := bytes.Cut(nameAndContent, types.MessageDelim)
+	/* 	if !found {
+		return "", nil, fmt.Errorf("no separator found in name and content (%s)", string(nameAndContent))
+	} */
 
 	return string(queueNameBytes), otherBytes, nil
 }

@@ -23,4 +23,5 @@ var (
 	MessageTypeConsumerHanshake = []byte{'c', 'h', 's'}
 	MessageTypeProducerHanshake = []byte{'p', 'h', 's'}
 	MessageDelim                = []byte{':'}
+	MessageHandshakeOK          = []byte{'o', 'k'}
 )
