@@ -3,11 +3,12 @@ package store
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
@@ -72,20 +73,39 @@ func TestPartitionManager(t *testing.T) {
 	logrus.Error(scanner.Err())
 }
 
-func TestContextTImeoutBehaviour(t *testing.T) {
-	topCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+func TestFreedom(t *testing.T) {
+	go func() {
+		srv, err := net.Listen("tcp", ":8080")
+		if err != nil {
+			panic(err)
+		}
+		conn, err := srv.Accept()
+		if err != nil {
+			panic(err)
+		}
 
-	go func(ctx context.Context) {
-		logrus.Error("start")
-		innerCtx, cancelinner := context.WithTimeout(ctx, time.Second*5)
-		defer cancelinner()
-		<-innerCtx.Done()
-		logrus.Error("we're done here.")
-	}(topCtx)
+		betterConR := bufio.NewReaderSize(conn, 2048)
+		betterConW := bufio.NewWriterSize(conn, 2048)
 
-	logrus.Error("fr tho")
-	<-topCtx.Done()
+		myguy := bufio.NewReadWriter(betterConR, betterConW)
+		sizeOfw := unsafe.Sizeof(*myguy.Writer)
+		fmt.Printf("size of myguyw: %d\n", sizeOfw)
+		sizeOfr := unsafe.Sizeof(*myguy.Reader)
+		fmt.Printf("size of myguyr: %d\n", sizeOfr)
+		sizeOfint64 := unsafe.Sizeof(int64(0))
+		fmt.Printf("size of int64: %d\n", sizeOfint64)
+		_ = myguy
+	}()
+
+	time.Sleep(time.Millisecond * 50)
+
+	conn2, err := net.Dial("tcp", ":8080")
+	if err != nil {
+		panic(err)
+	}
+
+	conn2.Write([]byte("hello\n"))
+	select {}
 }
 
 func BenchmarkBufferStuff(b *testing.B) {

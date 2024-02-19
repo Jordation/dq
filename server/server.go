@@ -160,6 +160,11 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 
 			return store, queueName, nil
 		} else if msgType == "phs" {
+			_, err = fmt.Fprintf(conn, "%s\n", types.MessageHandshakeOK)
+			if err != nil {
+				return nil, "", errors.Wrap(err, "handshake failed")
+			}
+
 			return store, queueName, nil
 		}
 
@@ -167,6 +172,7 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 	}
 }
 
+// TODO: implement this like a health check (add a different port for it)
 func (s *Server) handleConnectionStatusPings(ctx context.Context, conn net.Conn, store store.Store) {
 	errs := 0
 	// close the connection if there are too many errors
