@@ -160,6 +160,11 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 
 			return store, queueName, nil
 		} else if msgType == "phs" {
+			_, err = fmt.Fprintf(conn, "%s\n", types.MessageHandshakeOK)
+			if err != nil {
+				return nil, "", errors.Wrap(err, "handshake failed")
+			}
+
 			return store, queueName, nil
 		}
 

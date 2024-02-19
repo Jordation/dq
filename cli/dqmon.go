@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -72,6 +73,9 @@ func runServer(port string) {
 func runProducer(port string) {
 	p, err := producer.NewProducer(port, "default")
 	if err != nil {
+		panic(err)
+	}
+	if err = p.Start(context.Background()); err != nil {
 		panic(err)
 	}
 

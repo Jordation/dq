@@ -3,10 +3,11 @@ package util
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // the caller is responsible for closing the channel
@@ -20,19 +21,26 @@ func PollConnection(conn net.Conn) chan []byte {
 		// s := bufio.NewScanner(c)
 
 		for {
-			buff, err := r.ReadBytes('\n')
+			buff, err := r.ReadSlice('\n')
 			if err != nil && !errors.Is(err, io.EOF) {
-				fmt.Printf("utils.PollConnection : error reading from conn on queue : %v\n", err)
+				logrus.Errorf("utils.PollConnection : error reading from conn on queue : %v\n", err)
 			}
 
-			if len(buff) > 0 {
-				connChan <- buff[:len(buff)-1]
-			} else {
+			if len(buff) == 0 {
 				time.Sleep(time.Millisecond * 250)
+				continue
 			}
+
+			connChan <- buff[:len(buff)-1]
 		}
 
 	}(conn)
 
+	cleanup := func() {
+		close(connChan)
+		conn.Close()
+	}
+
+	_ = cleanup
 	return connChan
 }

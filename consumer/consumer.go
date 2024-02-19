@@ -56,7 +56,7 @@ func (c *Consumer) Consume() chan []byte {
 	outChan := make(chan []byte, 2)
 	msgChan := util.PollConnection(c.srv)
 
-	firstOffset, err := c.handleConnectionHandshake(context.Background(), c.srv, msgChan)
+	firstOffset, err := c.handleConnectionHandshake(context.Background(), msgChan)
 	if err != nil {
 		logrus.Error(err)
 		logrus.Fatal("failed handshake")
@@ -86,11 +86,11 @@ func (c *Consumer) Consume() chan []byte {
 	return outChan
 }
 
-func (c *Consumer) handleConnectionHandshake(ctx context.Context, conn net.Conn, msgChan <-chan []byte) (int64, error) {
+func (c *Consumer) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
-	_, err := fmt.Fprintf(conn, "%s:%s:%d\n", types.MessageTypeConsumerHanshake, c.queueName, c.currentOffset)
+	_, err := fmt.Fprintf(c.srv, "%s:%s:%d\n", types.MessageTypeConsumerHanshake, c.queueName, c.currentOffset)
 	if err != nil {
 		return 0, err
 	}
