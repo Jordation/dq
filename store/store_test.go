@@ -3,9 +3,11 @@ package store
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
@@ -70,6 +72,22 @@ func TestPartitionManager(t *testing.T) {
 	logrus.Error(scanner.Err())
 }
 
+func TestContextTImeoutBehaviour(t *testing.T) {
+	topCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go func(ctx context.Context) {
+		logrus.Error("start")
+		innerCtx, cancelinner := context.WithTimeout(ctx, time.Second*5)
+		defer cancelinner()
+		<-innerCtx.Done()
+		logrus.Error("we're done here.")
+	}(topCtx)
+
+	logrus.Error("fr tho")
+	<-topCtx.Done()
+}
+
 func BenchmarkBufferStuff(b *testing.B) {
 	size := 1024 * 128
 	nTests := 100_00
@@ -81,7 +99,7 @@ func BenchmarkBufferStuff(b *testing.B) {
 
 	writeData := faker.Lorem().Sentence(1000)
 
-	tests := []test{
+	benchmarks := []test{
 		{
 			name: "buffer used",
 			fn: func(b *testing.B) {
@@ -107,12 +125,48 @@ func BenchmarkBufferStuff(b *testing.B) {
 		},
 	}
 
-	for _, test := range tests {
-		if !b.Run(test.name, test.fn) {
+	for _, bm := range benchmarks {
+		if !b.Run(bm.name, bm.fn) {
 			logrus.Error("wtf")
 		}
 	}
 
+}
+
+func BenchmarkAppendVsAssign(b *testing.B) {
+	// over lots of diff arrangements, append won out i.e. arr := make([]T, 0, n) and arr = append(arr, T)
+	/* 	benchmarks := []benchmark{
+		{
+			name: "assign",
+			fn: func(b *testing.B) {
+				ch := newWriter()
+				for range nTests {
+					out, _ := getBatch(context.Background(), ch, ARR_SIZE)
+					_ = bytes.Join(out, []byte{})
+				}
+			},
+		},
+		{
+			name: "no pre-alloc",
+			fn: func(b *testing.B) {
+				ch := newWriter()
+				for range nTests {
+					out, _ := getBatchWithNoPreAlloc(context.Background(), ch, ARR_SIZE)
+					_ = bytes.Join(out, []byte{})
+				}
+			},
+		},
+		{
+			name: "append",
+			fn: func(b *testing.B) {
+				ch := newWriter()
+				for range nTests {
+					out, _ := getBatchWithAppend(context.Background(), ch, ARR_SIZE)
+					_ = bytes.Join(out, []byte{})
+				}
+			},
+		},
+	} */
 }
 
 func cleanup(file *os.File, clear bool) {

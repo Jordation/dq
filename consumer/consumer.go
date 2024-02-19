@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Jordation/dqmon/types"
 	"github.com/Jordation/dqmon/util"
 	"github.com/sirupsen/logrus"
 )
@@ -72,7 +73,7 @@ func (c *Consumer) Consume() chan []byte {
 }
 
 func parseSrvMessage(msg []byte) ([]byte, int64) {
-	offsetAsBytes, msg, found := bytes.Cut(msg, []byte{':'})
+	offsetAsBytes, msg, found := bytes.Cut(msg, types.MessageDelim)
 	if !found {
 		return nil, 0
 	}

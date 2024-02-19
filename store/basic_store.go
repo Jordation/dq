@@ -2,7 +2,7 @@ package store
 
 import (
 	"bytes"
-	"errors"
+	"fmt"
 	"os"
 	"sync/atomic"
 
@@ -51,7 +51,7 @@ func NewBasicStore(filePath string) (Store, error) {
 
 func (ps *basicStore) Write(p []byte) (int, error) {
 	if int64(len(p)) > ps.cfg.fixedEntrySize {
-		return 0, errors.New("line longer than max entry len")
+		return 0, fmt.Errorf("line longer than max entry len")
 	}
 
 	padded := make([]byte, ps.cfg.fixedEntrySize)

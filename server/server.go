@@ -2,16 +2,18 @@ package server
 
 import (
 	"bytes"
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/Jordation/dqmon/store"
 	"github.com/Jordation/dqmon/types"
 	"github.com/Jordation/dqmon/util"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -61,59 +63,53 @@ func (s *Server) Start() error {
 	}
 }
 
-// errors will terminate the connection
 func (s *Server) handleConnection(conn net.Conn) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	connChan := util.PollConnection(conn)
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logrus.WithError(err).Error("problem closing connection on handler exit")
-		}
-	}()
+
+	store, queueName, err := s.handleConnectionHandshake(ctx, connChan)
+	if err != nil {
+		return err
+	}
+
+	// handle the status messages
+	// also implement them on consoomer...
+	go s.handleConnectionStatusPings(ctx, conn, store)
 
 	for msg := range connChan {
-		typeOfMessage, queueName, content, err := parseMessage(msg)
+		typeOfMessage, _, content, err := parseMessage(msg)
 		if err != nil {
 			return err
 		}
 
-		store, ok := s.stores[queueName]
-		if !ok {
-			return errors.New("store not found for queue : " + queueName)
-		}
-
-		switch typeOfMessage {
-		case "read":
-			offset, err := parseReadMessage(content)
+		if typeOfMessage == "read" {
+			offset, err := parseReadMessageContent(content)
 			if err != nil {
-				return err
+				return err // flimsy - will kill the consumer
 			}
 
 			buf := make([]byte, 1024)
 
 			n, err := store.ReadAt(buf, offset)
 			if err != nil && !errors.Is(err, io.EOF) {
-				return err
+				return err // flimsy
 			}
 
 			if !errors.Is(err, io.EOF) {
-				_, err = fmt.Fprintf(conn, "%d:%s\n", offset+1, buf[:n])
+				_, err := fmt.Fprintf(conn, "%d:%s\n", offset+1, buf[:n])
 				if err != nil {
-					return err
+					return err // flimsy
 				}
 			}
-
-		case "write":
-			// TODO: maybe swap the order around and change consumers to try consume n times for an offset before failing?
-			//i.e. they all start asking for the new message and get it when the write completes
-
+		} else if typeOfMessage == "write" {
 			if _, err := store.Write(content); err != nil {
-				logrus.Error()
-				return err
+				return err // flimsy
 			}
 
-			s.NotifyConsumers(queueName, content)
+			s.notifyConsumers(queueName, content)
 
-		default:
+		} else {
 			logrus.Info("unhandled message type", typeOfMessage)
 		}
 	}
@@ -122,11 +118,90 @@ func (s *Server) handleConnection(conn net.Conn) error {
 	return nil
 }
 
-// returns message type and message content
+func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte) (store.Store, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		return nil, "", fmt.Errorf("handshake failed: timeout")
+
+	case handshakeResponse := <-msgChan:
+		msgType, queueName, msgContent, err := parseMessage(handshakeResponse)
+		if err != nil {
+			return nil, "", err
+		}
+
+		if len(msgContent) < 3 {
+			return nil, "", fmt.Errorf("handshake failed: message malformed (%s)", string(msgContent))
+		}
+
+		store, ok := s.stores[queueName]
+		if !ok {
+			return nil, "", fmt.Errorf("handshake failed: store not found for queue (%s)", queueName)
+		}
+
+		if msgType == "chs" {
+			_, offsetBytes, hasOffset := bytes.Cut(msgContent, types.MessageDelim)
+			if !hasOffset {
+				return store, queueName, nil
+			}
+
+			offset, err := strconv.ParseInt(string(offsetBytes), 0, 64)
+			if err != nil {
+				return nil, "", errors.Wrap(err, "handshake failed: parsing offset")
+			}
+
+			if offset > store.Messages() {
+				return nil, "", fmt.Errorf("handshake failed: requested offset > messages")
+			}
+
+			return store, queueName, nil
+		} else if msgType == "phs" {
+			return store, queueName, nil
+		}
+
+		return nil, queueName, fmt.Errorf("handshake failed: unhandled message type (%s)", msgType)
+	}
+}
+
+func (s *Server) handleConnectionStatusPings(ctx context.Context, conn net.Conn, store store.Store) {
+	errs := 0
+	// close the connection if there are too many errors
+	// handle errors with an err channel or something,
+	//close conns based off some data they hold for when server holds many conns? maybe map lole
+
+	defer func() {
+		if err := conn.Close(); err != nil {
+			logrus.WithError(err).Error("problem closing connection on handler exit")
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+		default:
+			_, err := fmt.Fprintf(conn, "off:%d", store.Messages())
+			if err != nil {
+				logrus.WithError(err).Error("couldn't write status message to listner")
+				errs++
+			}
+
+			if errs >= 3 {
+				logrus.WithError(err).Error("closing status loop for handler")
+				return
+			}
+
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+// type:name:content...
 func parseMessage(msg []byte) (string, string, []byte, error) {
-	msgType, nameAndContent, found := bytes.Cut(msg, []byte{':'})
+	msgType, nameAndContent, found := bytes.Cut(msg, types.MessageDelim)
 	if !found {
-		return "", "", nil, errors.New("no separator ':' found in message " + string(msg))
+		return "", "", nil, fmt.Errorf("no separator ':' found in message " + string(msg))
 	}
 
 	queueName, content, err := splitQueueName(nameAndContent)
@@ -134,17 +209,23 @@ func parseMessage(msg []byte) (string, string, []byte, error) {
 		return "", "", nil, err
 	}
 
-	if bytes.Equal(msgType, types.MessageTypeRead) {
+	switch true {
+	case bytes.Equal(msgType, types.MessageTypeRead):
 		return "read", queueName, content, nil
-	} else if bytes.Equal(msgType, types.MessageTypeWrite) {
+	case bytes.Equal(msgType, types.MessageTypeWrite):
 		return "write", queueName, content, nil
+	case bytes.Equal(msgType, nil):
+		return "status", queueName, content, nil
+	case bytes.Equal(msgType, nil):
+		return "chs", queueName, content, nil
+	case bytes.Equal(msgType, nil):
+		return "phs", queueName, content, nil
 	}
 
 	return string(msgType), queueName, nil, nil
 }
 
-// returns offset to read at
-func parseReadMessage(msg []byte) (int64, error) {
+func parseReadMessageContent(msg []byte) (int64, error) {
 	offset, err := strconv.ParseInt(string(msg), 0, 64)
 	if err != nil {
 		return 0, err
@@ -153,16 +234,17 @@ func parseReadMessage(msg []byte) (int64, error) {
 	return offset, nil
 }
 
+//queuename:type:content
 func splitQueueName(nameAndContent []byte) (string, []byte, error) {
-	queueNameBytes, otherBytes, found := bytes.Cut(nameAndContent, []byte{':'})
+	queueNameBytes, otherBytes, found := bytes.Cut(nameAndContent, types.MessageDelim)
 	if !found {
-		return "", nil, errors.New("no separator ':' found in name and content" + string(nameAndContent))
+		return "", nil, fmt.Errorf("no separator ':' found in name and content" + string(nameAndContent))
 	}
 
 	return string(queueNameBytes), otherBytes, nil
 }
 
-func (s *Server) NotifyConsumers(queueName string, msg []byte) {
+func (s *Server) notifyConsumers(queueName string, msg []byte) {
 	// notify the consumers of queue that ther are new messages available
 	for _, c := range s.clients {
 		fmt.Fprintf(os.Stdout, "checking %v\n", c.ConsumesFrom)
