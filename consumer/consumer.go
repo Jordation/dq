@@ -52,14 +52,13 @@ func NewConsumer(port string, queueName string) (*Consumer, error) {
 
 // consume will close the out channel if there is an error
 // the caller should read from the queue safely in order to not read a closed channel
-func (c *Consumer) Consume() chan []byte {
+func (c *Consumer) Consume(ctx context.Context) (chan []byte, error) {
 	outChan := make(chan []byte, 2)
 	msgChan := util.PollConnection(c.srv)
 
 	firstOffset, err := c.handleConnectionHandshake(context.Background(), msgChan)
 	if err != nil {
-		logrus.Error(err)
-		logrus.Fatal("failed handshake")
+		return nil, err
 	}
 
 	go func(outChan chan<- []byte) {
@@ -72,8 +71,7 @@ func (c *Consumer) Consume() chan []byte {
 		for in := range msgChan {
 			msg, nextOffset := parseSrvMessage(in)
 
-			fmt.Println("msg: ", string(msg))
-			//outChan <- msg
+			outChan <- msg
 
 			if err := requestRead(c.srv, c.queueName, nextOffset); err != nil {
 				logrus.WithError(err).Errorf("error requesting next read at offset %d", nextOffset)
@@ -83,7 +81,7 @@ func (c *Consumer) Consume() chan []byte {
 		}
 	}(outChan)
 
-	return outChan
+	return outChan, nil
 }
 
 func (c *Consumer) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte) (int64, error) {
@@ -100,13 +98,11 @@ func (c *Consumer) handleConnectionHandshake(ctx context.Context, msgChan <-chan
 		return 0, fmt.Errorf("handshake failed: timeout")
 
 	case handshakeResponse := <-msgChan:
-		logrus.Info("SRV MESSAGE: ", string(handshakeResponse))
-
-		if len(handshakeResponse) < 2 {
+		if len(handshakeResponse) < 2 { // ok(:offset)
 			return 0, fmt.Errorf("handshake failed: bad response (%s)", string(handshakeResponse))
 		}
 
-		if !bytes.Equal(handshakeResponse[:2], types.MessageHandshakeOK) {
+		if !bytes.Equal(handshakeResponse[:2], types.MessageOk) {
 			return 0, fmt.Errorf("handshake failed: bad response (%s)", string(handshakeResponse))
 		}
 

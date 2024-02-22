@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
@@ -21,61 +20,78 @@ type Server struct {
 	port string
 
 	stores  map[string]store.Store
-	clients []*types.QueueClient
+	clients []*queueClient
 }
 
-func NewServer(port, defaultStorePath string) (*Server, error) {
-	Store, err := store.NewBasicStore(defaultStorePath)
-	if err != nil {
-		return nil, err
+type queueClient struct {
+	conn       net.Conn
+	store      store.Store
+	clientType string
+}
+
+func NewServer(port, defaultStorePath string, storeConfigs ...store.StoreConfig) (*Server, error) {
+	stores := map[string]store.Store{}
+
+	for _, cfg := range storeConfigs {
+		st, err := store.NewBasicStore(cfg.BasePath)
+		if err != nil {
+			return nil, errors.Wrap(err, "("+cfg.BasePath+") : ")
+		}
+
+		stores[cfg.KeyName] = st
 	}
 
 	return &Server{
-		stores: map[string]store.Store{"default": Store},
+		stores: stores,
 		port:   port,
 	}, nil
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	ln, err := net.Listen("tcp", ":"+s.port)
 	if err != nil {
 		return err
 	}
 
 	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
-		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 
-		logrus.Info("accepted listener")
-
-		go func(c net.Conn) {
-			s.clients = append(s.clients, &types.QueueClient{
-				Conn:         c,
-				ConsumesFrom: "default",
-			})
-
-			if err := s.handleConnection(c); err != nil {
-				logrus.WithError(err).Error("it's fucked closed conn")
+		default:
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
 			}
-		}(conn)
+
+			logrus.Info("accepted listener")
+
+			go func(c net.Conn) {
+				thisClient := &queueClient{
+					conn: c,
+				}
+				s.clients = append(s.clients, thisClient)
+
+				if err := s.handleConnection(thisClient); err != nil {
+					logrus.WithError(err).Error("it's fucked closed conn")
+				}
+			}(conn)
+		}
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) error {
+func (s *Server) handleConnection(client *queueClient) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	connChan := util.PollConnection(conn)
+	connChan := util.PollConnection(client.conn)
 
-	store, queueName, err := s.handleConnectionHandshake(ctx, connChan, conn)
+	store, clientType, err := s.handleConnectionHandshake(ctx, connChan, client.conn)
 	if err != nil {
 		return err
 	}
 
-	// handle the status messages
-	// also implement them on consoomer...
-	//go s.handleConnectionStatusPings(ctx, conn, store)
+	client.store = store
+	client.clientType = clientType
 
 	for msg := range connChan {
 		typeOfMessage, _, content, err := parseMessage(msg)
@@ -97,21 +113,24 @@ func (s *Server) handleConnection(conn net.Conn) error {
 			}
 
 			if !errors.Is(err, io.EOF) {
-				_, err := fmt.Fprintf(conn, "%d:%s\n", offset+1, buf[:n])
+				_, err := fmt.Fprintf(client.conn, "%d:%s\n", offset+1, buf[:n])
 				if err != nil {
 					return err // flimsy
 				}
 			}
-		} else if typeOfMessage == "write" {
+			continue
+		}
+
+		if typeOfMessage == "write" {
 			if _, err := store.Write(content); err != nil {
 				return err // flimsy
 			}
 
-			s.notifyConsumers(queueName, content)
-
-		} else {
-			logrus.Info("unhandled message type", typeOfMessage)
+			s.notifyConsumers(content)
+			continue
 		}
+
+		logrus.Info("unhandled message type", typeOfMessage)
 	}
 
 	logrus.Info("finished reading")
@@ -153,55 +172,22 @@ func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan [
 				return nil, "", fmt.Errorf("handshake failed: requested offset > messages")
 			}
 
-			_, err = fmt.Fprintf(conn, "%s:%d\n", types.MessageHandshakeOK, offset)
+			_, err = fmt.Fprintf(conn, "%s:%d\n", types.MessageOk, offset)
 			if err != nil {
-				return nil, "", errors.Wrap(err, "handshake failed")
+				return nil, "consumer", errors.Wrap(err, "handshake failed")
 			}
 
 			return store, queueName, nil
 		} else if msgType == "phs" {
-			_, err = fmt.Fprintf(conn, "%s\n", types.MessageHandshakeOK)
+			_, err = fmt.Fprintf(conn, "%s\n", types.MessageOk)
 			if err != nil {
 				return nil, "", errors.Wrap(err, "handshake failed")
 			}
 
-			return store, queueName, nil
+			return store, "producer", nil
 		}
 
-		return nil, queueName, fmt.Errorf("handshake failed: unhandled message type (%s)", msgType)
-	}
-}
-
-// TODO: implement this like a health check (add a different port for it)
-func (s *Server) handleConnectionStatusPings(ctx context.Context, conn net.Conn, store store.Store) {
-	errs := 0
-	// close the connection if there are too many errors
-	// handle errors with an err channel or something,
-	//close conns based off some data they hold for when server holds many conns? maybe map lole
-
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logrus.WithError(err).Error("problem closing connection on handler exit")
-		}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-		default:
-			_, err := fmt.Fprintf(conn, "off:%d", store.Messages())
-			if err != nil {
-				logrus.WithError(err).Error("couldn't write status message to listner")
-				errs++
-			}
-
-			if errs >= 3 {
-				logrus.WithError(err).Error("closing status loop for handler")
-				return
-			}
-
-			time.Sleep(time.Second)
-		}
+		return nil, "", fmt.Errorf("handshake failed: unhandled message type (%s)", msgType)
 	}
 }
 
@@ -256,18 +242,15 @@ func splitQueueName(nameAndContent []byte) (string, []byte, error) {
 	return string(queueNameBytes), otherBytes, nil
 }
 
-func (s *Server) notifyConsumers(queueName string, msg []byte) {
-	// notify the consumers of queue that ther are new messages available
+func (s *Server) notifyConsumers(msg []byte) {
 	for _, c := range s.clients {
-		fmt.Fprintf(os.Stdout, "checking %v\n", c.ConsumesFrom)
-		if c.ConsumesFrom == queueName {
+		if c.clientType != "consumer" {
+			continue
+		}
 
-			fmt.Fprintf(os.Stdout, "matched %v, writing %s\n", c.ConsumesFrom, msg)
-
-			_, err := fmt.Fprintf(c.Conn, "%v:%s\n", s.stores[queueName].Messages(), msg)
-			if err != nil {
-				logrus.WithError(err).Errorf("can't notify consumer of %v", queueName)
-			}
+		if _, err := fmt.Fprintf(c.conn, "%v:%s\n", c.store.Messages(), msg); err != nil {
+			logrus.WithError(err).Errorf("couldn't notify consumer of new message")
+			// handle errors with some sort of retry / backoff scheme (v2)
 		}
 	}
 }

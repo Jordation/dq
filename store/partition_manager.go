@@ -16,6 +16,7 @@ type partitionManager struct {
 	cfg        *partitionedStoreConfig
 	rootDir    string
 	writeQueue chan []byte
+	fakeData   [][]byte
 }
 
 type partitionedStoreConfig struct {
@@ -42,10 +43,19 @@ func NewPartitionedStore(rootDir string) (Store, error) {
 		rootDir:    rootDir,
 		cfg:        defaultConfig,
 		writeQueue: make(chan []byte, 16),
+		fakeData:   getDummyData(),
 	}
 
-	p.startBatchWrites()
+	//go p.startBatchWrites()
 	return p, nil
+}
+
+func getDummyData() [][]byte {
+	res := make([][]byte, 0, 50)
+	for i := 0; i < 50; i++ {
+		res = append(res, []byte("data num: ("+fmt.Sprint(i)+")"))
+	}
+	return res
 }
 
 func (pm *partitionManager) ReadAt(_ []byte, _ int64) (int, error) {
@@ -69,7 +79,13 @@ func (pm *partitionManager) Cleanup() error {
 }
 
 func (pm *partitionManager) Messages() int64 {
-	panic("not implemented") // TODO: Implement
+	return int64(len(pm.fakeData))
+}
+
+func (pm *partitionManager) ReadAtWithCount(dest []byte, offset int64, count int64) (int, error) {
+	out := bytes.Join(pm.fakeData[offset:offset+count], []byte{'\n'})
+	n := copy(dest, out)
+	return n, nil
 }
 
 func (pm *partitionManager) getScannerFor(offset int64) (*bufio.Scanner, error) {
@@ -114,7 +130,7 @@ func (pm *partitionManager) batchWrite() (int, int, error) {
 
 	msgs, batchSize := getBatch(ctx, pm.writeQueue, pm.cfg.batchSize)
 
-	n, err := pm.Write(bytes.Join(msgs, []byte{}))
+	n, err := pm.Write(bytes.Join(msgs, []byte{'\n'}))
 	if err != nil {
 		return n, batchSize, err
 		// handle err gracefully at some point,  maybe place the messages back on the queue?

@@ -15,8 +15,10 @@ func PollConnection(conn net.Conn) chan []byte {
 	connChan := make(chan []byte)
 
 	go func(c net.Conn) {
-		r := bufio.NewReader(c)
+		defer close(connChan)
+		defer conn.Close()
 
+		r := bufio.NewReader(c)
 		// TODO: benchmark and test alternate "buffed" readers/writers provided by std lib
 		// s := bufio.NewScanner(c)
 
@@ -24,6 +26,7 @@ func PollConnection(conn net.Conn) chan []byte {
 			buff, err := r.ReadSlice('\n')
 			if err != nil && !errors.Is(err, io.EOF) {
 				logrus.Errorf("utils.PollConnection : error reading from conn on queue : %v\n", err)
+				return
 			}
 
 			if len(buff) == 0 {
@@ -36,11 +39,5 @@ func PollConnection(conn net.Conn) chan []byte {
 
 	}(conn)
 
-	cleanup := func() {
-		close(connChan)
-		conn.Close()
-	}
-
-	_ = cleanup
 	return connChan
 }

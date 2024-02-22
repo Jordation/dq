@@ -34,6 +34,10 @@ func main() {
 				runConsoomer(port)
 			case "producer":
 				runProducer(port)
+			case "s2":
+				runServerV2(port)
+			case "c2":
+				runConsumerV2(port)
 			}
 
 			return nil
@@ -45,13 +49,37 @@ func main() {
 	}
 }
 
+/* func runConsumerV2(port string) {
+	c, err := consumer.NewConsumerV2(port, "default")
+	if err != nil {
+		panic(err)
+	}
+
+	out, err := c.Consume(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	logrus.Info("consuming from :", port)
+	for msg := range out {
+		for _, m := range msg {
+			if _, err := fmt.Fprintf(os.Stdout, "message: %s\n", string(m)); err != nil {
+				logrus.Error(err)
+			}
+		}
+	}
+} */
+
 func runConsoomer(port string) {
 	c, err := consumer.NewConsumer(port, "default")
 	if err != nil {
 		panic(err)
 	}
 
-	out := c.Consume()
+	out, err := c.Consume(context.Background())
+	if err != nil {
+		panic(err)
+	}
 
 	logrus.Info("starting consoomer aimed at :", port)
 	for msg := range out {
@@ -61,13 +89,29 @@ func runConsoomer(port string) {
 	}
 }
 
+/* func runServerV2(port string) {
+	s, err := server.NewServerV2(port, "", store.StoreConfig{
+		BasePath: "../store/partition/defaultstore",
+		KeyName:  "default",
+	})
+	if err != nil {
+		panic(err)
+	}
+	logrus.Info("starting server on :", port)
+	if err := s.Start(context.Background()); err != nil {
+		panic(err)
+	}
+} */
+
 func runServer(port string) {
 	s, err := server.NewServer(port, "../store/partition/defaultstore")
 	if err != nil {
 		panic(err)
 	}
 	logrus.Info("starting server on :", port)
-	s.Start()
+	if err := s.Start(context.Background()); err != nil {
+		panic(err)
+	}
 }
 
 func runProducer(port string) {
@@ -83,7 +127,7 @@ func runProducer(port string) {
 	logrus.Info("enter a message to submit data to the store")
 	ioScanner := bufio.NewScanner(os.Stdin)
 	for ioScanner.Scan() {
-		if _, err := p.Write([]byte(ioScanner.Text())); err != nil {
+		if _, err := p.Write(context.TODO(), ioScanner.Bytes()); err != nil {
 			logrus.Error(err)
 		}
 	}

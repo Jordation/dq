@@ -14,12 +14,17 @@ type Store interface {
 	Write([]byte) (int, error)
 	Cleanup() error
 	Messages() int64
+	ReadAtWithCount([]byte, int64, int64) (int, error)
 }
 
 type basicStore struct {
 	f         *os.File
 	maxOffset *atomic.Int64
 	cfg       *partitionedStoreConfig
+}
+
+type StoreConfig struct {
+	BasePath, KeyName string
 }
 
 func NewBasicStore(filePath string) (Store, error) {
@@ -81,3 +86,5 @@ func (ps *basicStore) ReadAt(p []byte, off int64) (int, error) {
 
 func (ps *basicStore) Cleanup() error  { return nil }
 func (ps *basicStore) Messages() int64 { return ps.maxOffset.Load() }
+
+func (ps *basicStore) ReadAtWithCount([]byte, int64, int64) (int, error) { panic("unimplemented") }

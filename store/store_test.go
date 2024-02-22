@@ -84,16 +84,19 @@ func TestFreedom(t *testing.T) {
 			panic(err)
 		}
 
+		conn.Write([]byte("hello\n"))
+
 		betterConR := bufio.NewReaderSize(conn, 2048)
 		betterConW := bufio.NewWriterSize(conn, 2048)
 
 		myguy := bufio.NewReadWriter(betterConR, betterConW)
+
+		time.Sleep(time.Millisecond * 200)
+		sizeOfmyGuy := unsafe.Sizeof(*myguy)
 		sizeOfw := unsafe.Sizeof(*myguy.Writer)
-		fmt.Printf("size of myguyw: %d\n", sizeOfw)
 		sizeOfr := unsafe.Sizeof(*myguy.Reader)
-		fmt.Printf("size of myguyr: %d\n", sizeOfr)
-		sizeOfint64 := unsafe.Sizeof(int64(0))
-		fmt.Printf("size of int64: %d\n", sizeOfint64)
+		sizeOfconn := unsafe.Sizeof(*conn.(*net.TCPConn))
+		fmt.Printf("myguy(%d + %d + %d) vs conn(%d)\n", sizeOfw, sizeOfr, sizeOfmyGuy, sizeOfconn)
 		_ = myguy
 	}()
 
@@ -106,6 +109,10 @@ func TestFreedom(t *testing.T) {
 
 	conn2.Write([]byte("hello\n"))
 	select {}
+}
+
+func TestThat(t *testing.T) {
+
 }
 
 func BenchmarkBufferStuff(b *testing.B) {

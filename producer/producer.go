@@ -29,7 +29,7 @@ func NewProducer(addr string, queueName string) (*Producer, error) {
 	}, nil
 }
 
-func (pr *Producer) Write(p []byte) (int, error) {
+func (pr *Producer) Write(_ context.Context, p []byte) (int, error) {
 	return fmt.Fprintf(pr.srv, "write:%s:%s\n", pr.queueName, p)
 }
 
@@ -55,7 +55,7 @@ func (p *Producer) Start(ctx context.Context) error {
 			return fmt.Errorf("handshake failed: bad response (%s)", string(handshakeResponse))
 		}
 
-		if !bytes.Equal(handshakeResponse[:2], types.MessageHandshakeOK) {
+		if !bytes.Equal(handshakeResponse[:2], types.MessageOk) {
 			return fmt.Errorf("handshake failed: not ok (%s)", string(handshakeResponse))
 		}
 
