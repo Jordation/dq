@@ -33,21 +33,3 @@ var (
 	MessageBatchBegin = []byte{'b', 'e', 'g', 'i', 'n'}
 	MessageBatchEnd   = []byte{'e', 'n', 'd'}
 )
-
-// FINE i'll use json for now.. speed later this byte parsing shit is slowing me down
-type ClientHandshakeRequest struct {
-	Type             string
-	QueueName        string
-	StartOffset      int64
-	RequestChunkSize int
-}
-
-type ConsumerRequest struct {
-	Offset int64
-}
-
-type ConsumerResponse struct {
-	Success bool
-	Err     string
-	Data    string //json string
-}

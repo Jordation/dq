@@ -51,8 +51,9 @@ func NewPartitionedStore(rootDir string) (Store, error) {
 }
 
 func getDummyData() [][]byte {
-	res := make([][]byte, 0, 50)
-	for i := 0; i < 50; i++ {
+	size := 7
+	res := make([][]byte, 0, size)
+	for i := 0; i < size; i++ {
 		res = append(res, []byte("data num: ("+fmt.Sprint(i)+")"))
 	}
 	return res
@@ -79,13 +80,29 @@ func (pm *partitionManager) Cleanup() error {
 }
 
 func (pm *partitionManager) Messages() int64 {
-	return int64(len(pm.fakeData))
+	return int64(len(pm.fakeData)) - 1
 }
 
-func (pm *partitionManager) ReadAtWithCount(dest []byte, offset int64, count int64) (int, error) {
+func (pm *partitionManager) ReadAtWithCount(dest []byte, offset int64, count int64) (int, int, error) {
+	msgs := pm.Messages()
+	if offset+count > msgs {
+		if offset == msgs {
+			copy(dest, pm.fakeData[offset])
+			return 1, len(pm.fakeData[offset]), nil
+		}
+
+		for i := range count {
+			if offset+i >= pm.Messages()-1 {
+				out := bytes.Join(pm.fakeData[offset:offset+i], []byte{'\n'})
+				copy(dest, out)
+				return int(i) + 1, len(out), nil
+			}
+		}
+	}
+
 	out := bytes.Join(pm.fakeData[offset:offset+count], []byte{'\n'})
-	n := copy(dest, out)
-	return n, nil
+	copy(dest, out)
+	return int(count), len(out), nil
 }
 
 func (pm *partitionManager) getScannerFor(offset int64) (*bufio.Scanner, error) {

@@ -10,6 +10,8 @@ import (
 	"github.com/Jordation/dqmon/consumer"
 	"github.com/Jordation/dqmon/producer"
 	"github.com/Jordation/dqmon/server"
+	"github.com/Jordation/dqmon/store"
+	v2 "github.com/Jordation/dqmon/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
@@ -49,26 +51,11 @@ func main() {
 	}
 }
 
-/* func runConsumerV2(port string) {
-	c, err := consumer.NewConsumerV2(port, "default")
-	if err != nil {
-		panic(err)
+func runConsumerV2(port string) {
+	if err := v2.Consume(context.Background()); err != nil {
+		logrus.Fatal(err)
 	}
-
-	out, err := c.Consume(context.Background())
-	if err != nil {
-		panic(err)
-	}
-
-	logrus.Info("consuming from :", port)
-	for msg := range out {
-		for _, m := range msg {
-			if _, err := fmt.Fprintf(os.Stdout, "message: %s\n", string(m)); err != nil {
-				logrus.Error(err)
-			}
-		}
-	}
-} */
+}
 
 func runConsoomer(port string) {
 	c, err := consumer.NewConsumer(port, "default")
@@ -89,19 +76,16 @@ func runConsoomer(port string) {
 	}
 }
 
-/* func runServerV2(port string) {
-	s, err := server.NewServerV2(port, "", store.StoreConfig{
-		BasePath: "../store/partition/defaultstore",
-		KeyName:  "default",
-	})
+func runServerV2(port string) {
+	store, err := store.NewPartitionedStore("../store/partition/defaultstore")
 	if err != nil {
-		panic(err)
+		logrus.Fatal(err)
 	}
-	logrus.Info("starting server on :", port)
-	if err := s.Start(context.Background()); err != nil {
-		panic(err)
+
+	if err = v2.StartServer(context.Background(), store); err != nil {
+		logrus.Fatal(err)
 	}
-} */
+}
 
 func runServer(port string) {
 	s, err := server.NewServer(port, "../store/partition/defaultstore")
@@ -119,6 +103,7 @@ func runProducer(port string) {
 	if err != nil {
 		panic(err)
 	}
+
 	if err = p.Start(context.Background()); err != nil {
 		panic(err)
 	}
