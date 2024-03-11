@@ -21,7 +21,7 @@ func TestStore(t *testing.T) {
 
 	defer cleanup(ps.(*basicStore).f, false)
 	stat, _ := ps.(*basicStore).f.Stat()
-	fmt.Println(stat.Size() / ps.(*basicStore).cfg.fixedEntrySize)
+	fmt.Println(stat.Size() / ps.(*basicStore).cfg.entrySize)
 
 	//	writeShit(ps.(*partitionedStore))
 
@@ -50,27 +50,15 @@ func TestBufioUsage(t *testing.T) {
 }
 
 func TestPartitionManager(t *testing.T) {
-	pm := &partitionManager{
+	_ = &partitionManager{
 		rootDir: "./testdata/",
 		cfg: &partitionedStoreConfig{
-			fixedEntrySize: 16,
-			maxFileSize:    16,
+			entrySize:      16,
+			entriesPerFile: 16,
 			testOverride:   true,
 		},
 	}
 
-	scanner, err := pm.getScannerFor(0)
-	if err != nil {
-		panic(err)
-	}
-
-	for scanner.Scan() {
-		fmt.Println(scanner.Text())
-		if scanner.Err() != nil {
-			logrus.Error(scanner.Err())
-		}
-	}
-	logrus.Error(scanner.Err())
 }
 
 func TestFreedom(t *testing.T) {
@@ -109,10 +97,6 @@ func TestFreedom(t *testing.T) {
 
 	conn2.Write([]byte("hello\n"))
 	select {}
-}
-
-func TestThat(t *testing.T) {
-
 }
 
 func BenchmarkBufferStuff(b *testing.B) {

@@ -29,7 +29,7 @@ type StoreConfig struct {
 
 func NewBasicStore(filePath string) (Store, error) {
 	cfg := &partitionedStoreConfig{
-		fixedEntrySize: 1024,
+		entrySize: 1024,
 	}
 
 	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_APPEND, 0644)
@@ -44,7 +44,7 @@ func NewBasicStore(filePath string) (Store, error) {
 
 	fella := &atomic.Int64{}
 	if stat.Size() > 0 {
-		fella.Add(stat.Size() / cfg.fixedEntrySize)
+		fella.Add(stat.Size() / cfg.entrySize)
 	}
 
 	return &basicStore{
@@ -55,11 +55,11 @@ func NewBasicStore(filePath string) (Store, error) {
 }
 
 func (ps *basicStore) Write(p []byte) (int, error) {
-	if int64(len(p)) > ps.cfg.fixedEntrySize {
+	if int64(len(p)) > ps.cfg.entrySize {
 		return 0, fmt.Errorf("line longer than max entry len")
 	}
 
-	padded := make([]byte, ps.cfg.fixedEntrySize)
+	padded := make([]byte, ps.cfg.entrySize)
 	copy(padded, p)
 
 	_, err := ps.f.Write(padded)
@@ -74,7 +74,7 @@ func (ps *basicStore) Write(p []byte) (int, error) {
 }
 
 func (ps *basicStore) ReadAt(p []byte, off int64) (int, error) {
-	n, err := ps.f.ReadAt(p, off*ps.cfg.fixedEntrySize)
+	n, err := ps.f.ReadAt(p, off*ps.cfg.entrySize)
 	if err != nil {
 		return n, err
 	}

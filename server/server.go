@@ -1,256 +1,87 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"strconv"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/Jordation/dqmon/store"
-	"github.com/Jordation/dqmon/types"
-	"github.com/Jordation/dqmon/util"
-	"github.com/pkg/errors"
+	"github.com/Jordation/godq"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type Server struct {
-	port string
-
-	stores  map[string]store.Store
-	clients []*queueClient
+	Cfg *Config
+	log logrus.FieldLogger
+	godq.UnimplementedGoDqServer
 }
 
-type queueClient struct {
-	conn       net.Conn
-	store      store.Store
-	clientType string
+type Config struct {
+	port int
+	opts []grpc.ServerOption
 }
 
-func NewServer(port, defaultStorePath string, storeConfigs ...store.StoreConfig) (*Server, error) {
-	stores := map[string]store.Store{}
+func DefaultConfig() *Config {
+	return &Config{
+		port: 50051,
+		opts: []grpc.ServerOption{
+			grpc.Creds(insecure.NewCredentials()),
+		},
+	}
+}
 
-	for _, cfg := range storeConfigs {
-		st, err := store.NewBasicStore(cfg.BasePath)
+func New(ctx context.Context, cfg *Config) (*Server, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+
+	s := &Server{
+		log: logrus.New().WithField("svc", "server"),
+		Cfg: cfg,
+	}
+
+	return s, nil
+}
+
+func (s *Server) Serve() (chan os.Signal, func()) {
+	grpcSrv := grpc.NewServer(s.Cfg.opts...)
+	godq.RegisterGoDqServer(grpcSrv, s)
+
+	notiChan := make(chan os.Signal, 1)
+	signal.Notify(notiChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", s.Cfg.port))
 		if err != nil {
-			return nil, errors.Wrap(err, "("+cfg.BasePath+") : ")
+			panic(err)
 		}
+		s.log.Error(grpcSrv.Serve(lis))
+	}()
 
-		stores[cfg.KeyName] = st
-	}
-
-	return &Server{
-		stores: stores,
-		port:   port,
-	}, nil
-}
-
-func (s *Server) Start(ctx context.Context) error {
-	ln, err := net.Listen("tcp", ":"+s.port)
-	if err != nil {
-		return err
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		default:
-			conn, err := ln.Accept()
-			if err != nil {
-				return err
-			}
-
-			logrus.Info("accepted listener")
-
-			go func(c net.Conn) {
-				thisClient := &queueClient{
-					conn: c,
-				}
-				s.clients = append(s.clients, thisClient)
-
-				if err := s.handleConnection(thisClient); err != nil {
-					logrus.WithError(err).Error("it's fucked closed conn")
-				}
-			}(conn)
-		}
+	return notiChan, func() {
+		s.log.Info("shutting down")
+		grpcSrv.GracefulStop()
 	}
 }
 
-func (s *Server) handleConnection(client *queueClient) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	connChan := util.PollConnection(client.conn)
-
-	store, clientType, err := s.handleConnectionHandshake(ctx, connChan, client.conn)
-	if err != nil {
-		return err
-	}
-
-	client.store = store
-	client.clientType = clientType
-
-	for msg := range connChan {
-		typeOfMessage, _, content, err := parseMessage(msg)
-		if err != nil {
-			return err
-		}
-
-		if typeOfMessage == "read" {
-			offset, err := parseReadMessageContent(content)
-			if err != nil {
-				return err // flimsy - will kill the consumer
-			}
-
-			buf := make([]byte, 1024)
-
-			n, err := store.ReadAt(buf, offset)
-			if err != nil && !errors.Is(err, io.EOF) {
-				return err // flimsy
-			}
-
-			if !errors.Is(err, io.EOF) {
-				_, err := fmt.Fprintf(client.conn, "%d:%s\n", offset+1, buf[:n])
-				if err != nil {
-					return err // flimsy
-				}
-			}
+func (s *Server) ConsumeBatch(req *godq.ConsumeRequest, srv godq.GoDq_ConsumeBatchServer) error {
+	for i := int32(0); i < req.BatchSize; i++ {
+		if err := srv.Send(&godq.Message{
+			Data: []byte(fmt.Sprintf("message number %d!", i)),
+		}); err != nil {
+			s.log.WithError(err).Error("error sending message")
 			continue
 		}
-
-		if typeOfMessage == "write" {
-			if _, err := store.Write(content); err != nil {
-				return err // flimsy
-			}
-
-			s.notifyConsumers(content)
-			continue
-		}
-
-		logrus.Info("unhandled message type", typeOfMessage)
 	}
 
-	logrus.Info("finished reading")
+	srv.SetTrailer(metadata.New(map[string]string{
+		"next_offset": fmt.Sprintf("%d", req.Offset+int64(req.BatchSize)),
+	}))
+
 	return nil
-}
-
-func (s *Server) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte, conn net.Conn) (store.Store, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
-
-	select {
-	case <-ctx.Done():
-		return nil, "", fmt.Errorf("handshake failed: timeout")
-
-	case handshakeRequest := <-msgChan:
-		msgType, queueName, otherContent, err := parseMessage(handshakeRequest)
-		if err != nil {
-			return nil, "", err
-		}
-
-		logrus.Info("CON MESSAGE: ", string(handshakeRequest))
-
-		store, ok := s.stores[queueName]
-		if !ok {
-			return nil, "", fmt.Errorf("handshake failed: store not found for queue (%s)", queueName)
-		}
-
-		if msgType == "chs" {
-			if len(otherContent) == 0 {
-				return nil, "", fmt.Errorf("handshake failed: no offset")
-			}
-
-			offset, err := strconv.ParseInt(string(otherContent), 0, 64)
-			if err != nil {
-				return nil, "", errors.Wrap(err, "handshake failed: parsing offset")
-			}
-
-			if offset > store.Messages() {
-				return nil, "", fmt.Errorf("handshake failed: requested offset > messages")
-			}
-
-			_, err = fmt.Fprintf(conn, "%s:%d\n", types.MessageOk, offset)
-			if err != nil {
-				return nil, "consumer", errors.Wrap(err, "handshake failed")
-			}
-
-			return store, queueName, nil
-		} else if msgType == "phs" {
-			_, err = fmt.Fprintf(conn, "%s\n", types.MessageOk)
-			if err != nil {
-				return nil, "", errors.Wrap(err, "handshake failed")
-			}
-
-			return store, "producer", nil
-		}
-
-		return nil, "", fmt.Errorf("handshake failed: unhandled message type (%s)", msgType)
-	}
-}
-
-// type:name:content...
-func parseMessage(msg []byte) (string, string, []byte, error) {
-	msgType, nameAndContent, found := bytes.Cut(msg, types.MessageDelim)
-	if !found {
-		return "", "", nil, fmt.Errorf("no separator ':' found in message %s", string(msg))
-	}
-
-	queueName, content, err := splitQueueName(nameAndContent)
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	switch true {
-	case bytes.Equal(msgType, types.MessageTypeRead):
-		return "read", queueName, content, nil
-
-	case bytes.Equal(msgType, types.MessageTypeWrite):
-		return "write", queueName, content, nil
-
-	case bytes.Equal(msgType, types.MessageTypeStatus):
-		return "status", queueName, content, nil
-
-	case bytes.Equal(msgType, types.MessageTypeConsumerHanshake):
-		return "chs", queueName, content, nil
-
-	case bytes.Equal(msgType, types.MessageTypeProducerHanshake):
-		return "phs", queueName, content, nil
-	}
-
-	return string(msgType), queueName, nil, nil
-}
-
-func parseReadMessageContent(msg []byte) (int64, error) {
-	offset, err := strconv.ParseInt(string(msg), 0, 64)
-	if err != nil {
-		return 0, err
-	}
-
-	return offset, nil
-}
-
-//queuename:type:content
-func splitQueueName(nameAndContent []byte) (string, []byte, error) {
-	queueNameBytes, otherBytes, _ := bytes.Cut(nameAndContent, types.MessageDelim)
-	/* 	if !found {
-		return "", nil, fmt.Errorf("no separator found in name and content (%s)", string(nameAndContent))
-	} */
-
-	return string(queueNameBytes), otherBytes, nil
-}
-
-func (s *Server) notifyConsumers(msg []byte) {
-	for _, c := range s.clients {
-		if c.clientType != "consumer" {
-			continue
-		}
-
-		if _, err := fmt.Fprintf(c.conn, "%v:%s\n", c.store.Messages(), msg); err != nil {
-			logrus.WithError(err).Errorf("couldn't notify consumer of new message")
-			// handle errors with some sort of retry / backoff scheme (v2)
-		}
-	}
 }

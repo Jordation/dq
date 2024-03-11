@@ -1,135 +1,119 @@
 package consumer
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"net"
-	"strconv"
+	"io"
 	"time"
 
-	"github.com/Jordation/dqmon/types"
-	"github.com/Jordation/dqmon/util"
-	"github.com/pkg/errors"
+	"github.com/Jordation/godq"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Consumer struct {
-	srv           net.Conn
-	queueName     string
-	currentOffset int64
+	Client godq.GoDqClient
+
+	Cfg    *Config
+	log    logrus.FieldLogger
+	offset int64
 }
 
-func NewConsumer(port string, queueName string) (*Consumer, error) {
-	var (
-		srv     net.Conn
-		retries = 3
+type Config struct {
+	ServerAddr  string
+	Queue       string
+	BatchSize   int32
+	StartOffset int64
+}
+
+func DefaultConfig() *Config {
+	return &Config{
+		ServerAddr:  "localhost:50051",
+		Queue:       "default",
+		BatchSize:   3,
+		StartOffset: 0,
+	}
+}
+
+func NewConsumer(ctx context.Context) (*Consumer, func(), error) {
+	c := &Consumer{
+		Cfg: DefaultConfig(),
+		log: logrus.New().WithField("svc", "consumer"),
+	}
+
+	conn, err := grpc.DialContext(ctx,
+		c.Cfg.ServerAddr,
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
-
-	for i := range retries {
-		conn, err := net.Dial("tcp", ":"+port)
-		if err != nil && retries == 0 {
-			return nil, err
-		}
-
-		if err == nil {
-			logrus.Info("connected to server on :", port)
-			srv = conn
-			break
-		}
-
-		time.Sleep(time.Millisecond * 200 * time.Duration(i))
-		logrus.Info("retrying")
-		retries--
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &Consumer{
-		srv:           srv,
-		queueName:     queueName,
-		currentOffset: 0,
-	}, nil
+	c.Client = godq.NewGoDqClient(conn)
+
+	cleanup := func() {
+		if err := conn.Close(); err != nil {
+			c.log.WithError(err).Error("failed to close connection")
+		}
+		c.log.Info("shutting down")
+	}
+
+	return c, cleanup, nil
 }
 
-// consume will close the out channel if there is an error
-// the caller should read from the queue safely in order to not read a closed channel
-func (c *Consumer) Consume(ctx context.Context) (chan []byte, error) {
-	outChan := make(chan []byte, 2)
-	msgChan := util.PollConnection(c.srv)
+func (c *Consumer) Consume(ctx context.Context) <-chan *godq.Message {
+	msgChan := make(chan *godq.Message)
 
-	firstOffset, err := c.handleConnectionHandshake(context.Background(), msgChan)
-	if err != nil {
-		return nil, err
-	}
+	go func() {
+		defer close(msgChan)
+		for {
+			select {
 
-	go func(outChan chan<- []byte) {
-		defer close(outChan)
-		if err := requestRead(c.srv, c.queueName, firstOffset); err != nil {
-			logrus.WithError(err).Error("error requesting first read")
+			default:
+				reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+
+				batchClient, err := c.Client.ConsumeBatch(reqCtx, &godq.ConsumeRequest{
+					Queue:     c.Cfg.Queue,
+					Offset:    c.offset,
+					BatchSize: c.Cfg.BatchSize,
+				})
+				if err != nil {
+					c.log.WithError(err).Error("failed to consume batch")
+					continue
+				}
+
+				c.handleBatch(batchClient, msgChan)
+				return
+
+			case <-ctx.Done():
+				c.log.WithError(ctx.Err()).Error("consumer closing channel")
+				return
+
+			}
+		}
+	}()
+
+	return msgChan
+}
+
+func (c *Consumer) handleBatch(batchClient godq.GoDq_ConsumeBatchClient, outChan chan<- *godq.Message) {
+	for {
+		msg, err := batchClient.Recv()
+		if err == io.EOF {
+			// TODO
+			spew.Dump(batchClient.Trailer())
+
+			c.log.Info("end of stream")
+			return
+		} else if err != nil {
+			c.log.WithError(err).Error("failed to receive message")
 			return
 		}
-
-		for in := range msgChan {
-			msg, nextOffset := parseSrvMessage(in)
-
-			outChan <- msg
-
-			if err := requestRead(c.srv, c.queueName, nextOffset); err != nil {
-				logrus.WithError(err).Errorf("error requesting next read at offset %d", nextOffset)
-				return
-			}
-			c.currentOffset++
-		}
-	}(outChan)
-
-	return outChan, nil
-}
-
-func (c *Consumer) handleConnectionHandshake(ctx context.Context, msgChan <-chan []byte) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
-
-	_, err := fmt.Fprintf(c.srv, "%s:%s:%d\n", types.MessageTypeConsumerHanshake, c.queueName, c.currentOffset)
-	if err != nil {
-		return 0, err
+		outChan <- msg
 	}
 
-	select {
-	case <-ctx.Done():
-		return 0, fmt.Errorf("handshake failed: timeout")
-
-	case handshakeResponse := <-msgChan:
-		if len(handshakeResponse) < 2 { // ok(:offset)
-			return 0, fmt.Errorf("handshake failed: bad response (%s)", string(handshakeResponse))
-		}
-
-		if !bytes.Equal(handshakeResponse[:2], types.MessageOk) {
-			return 0, fmt.Errorf("handshake failed: bad response (%s)", string(handshakeResponse))
-		}
-
-		firstOffset, err := strconv.ParseInt(string(handshakeResponse[3:]), 0, 64)
-		if err != nil {
-			return 0, errors.Wrap(err, "handshake failed: parsing offset")
-		}
-
-		return firstOffset, nil
-	}
-}
-
-func parseSrvMessage(msg []byte) ([]byte, int64) {
-	offsetAsBytes, msg, found := bytes.Cut(msg, types.MessageDelim)
-	if !found {
-		return nil, 0
-	}
-
-	nextOffset, err := strconv.ParseInt(string(offsetAsBytes), 0, 64)
-	if err != nil {
-		logrus.WithError(err).Error("error parsing server offset response")
-	}
-
-	return msg, nextOffset
-}
-
-func requestRead(srv net.Conn, queueName string, off int64) error {
-	_, err := fmt.Fprintf(srv, "read:%s:%d\n", queueName, off)
-	return err
 }

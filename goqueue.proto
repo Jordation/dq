@@ -1,0 +1,41 @@
+syntax = "proto3";
+package godq;
+option go_package = "github.com/Jordation/godq";
+
+
+service GoDq{
+    rpc ConsumeBatch (ConsumeRequest) returns (stream Message) {}
+    rpc WriteBatch (WriteBatchRequest) returns (Log) {}
+}
+
+message Log {
+    sfixed64        Len         = 1;
+    string          Queue       = 2;
+    repeated string Partitions  = 3;
+    int64           StartOffset = 4;
+    int64           EndOffset   = 5;
+}
+
+message WriteBatchRequest {
+    string Queue        = 1;
+    bytes  MessageBatch = 2;
+}
+
+message MessageBatch {
+    int64          OffsetStart      = 1;
+    int32          OffsetDelta      = 2;
+    int64          FirstTimestamp   = 3;
+    int64          LastTimestamp    = 4;
+    repeated bytes Messages         = 5;
+}
+
+message Message {
+    int64 Timestamp = 1;
+    bytes Data      = 2;
+}
+
+message ConsumeRequest {
+    string Queue    = 1;
+    int64 Offset    = 2;
+    int32 BatchSize = 3;
+}
